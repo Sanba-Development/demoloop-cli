@@ -1,57 +1,72 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { Story } from '../lib/agent-parser.js';
 import type { SessionRecord } from '../lib/task-writer.js';
 import { transcribe } from '../lib/stt.js';
 
-// Shared state: the CLI polls feedbackQueue for submitted feedback from the browser.
 let feedbackQueue: string | null = null;
-
 export function getFeedback(): string | null {
   const fb = feedbackQueue;
   feedbackQueue = null;
   return fb;
 }
 
-export function createDashboardServer(stories: Story[], projectPath: string, productUrl?: string) {
+export function createDashboardServer(
+  stories: Story[],
+  projectPath: string,
+  productUrl?: string,
+  audioPath?: string
+) {
   return createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? '/';
     const method = req.method ?? 'GET';
 
-    // CORS for local dev
     res.setHeader('Access-Control-Allow-Origin', '*');
 
     // ── GET /api/stories ────────────────────────────────────────────
     if (url === '/api/stories' && method === 'GET') {
-      json(res, stories);
-      return;
+      json(res, stories); return;
     }
 
     // ── GET /api/sessions ───────────────────────────────────────────
     if (url === '/api/sessions' && method === 'GET') {
-      const sessionsDir = join(projectPath, '.demoloop', 'sessions');
-      if (!existsSync(sessionsDir)) { json(res, []); return; }
-      const sessions: SessionRecord[] = readdirSync(sessionsDir)
-        .filter((f) => f.endsWith('.json'))
-        .sort().reverse().slice(0, 20)
-        .map((f) => { try { return JSON.parse(readFileSync(join(sessionsDir, f), 'utf8')); } catch { return null; } })
+      const dir = join(projectPath, '.demoloop', 'sessions');
+      if (!existsSync(dir)) { json(res, []); return; }
+      const sessions: SessionRecord[] = readdirSync(dir)
+        .filter(f => f.endsWith('.json')).sort().reverse().slice(0, 20)
+        .map(f => { try { return JSON.parse(readFileSync(join(dir, f), 'utf8')); } catch { return null; } })
         .filter(Boolean);
-      json(res, sessions);
-      return;
+      json(res, sessions); return;
+    }
+
+    // ── GET /api/audio ──────────────────────────────────────────────
+    // Serves the generated TTS file directly to the browser <audio> element.
+    if (url === '/api/audio' && method === 'GET') {
+      if (!audioPath || !existsSync(audioPath)) {
+        res.writeHead(404); res.end(); return;
+      }
+      const data = readFileSync(audioPath);
+      res.writeHead(200, {
+        'Content-Type': 'audio/mpeg',
+        'Content-Length': data.length,
+        'Cache-Control': 'no-cache',
+      });
+      res.end(data); return;
+    }
+
+    // ── GET /api/audio/status ────────────────────────────────────────
+    if (url === '/api/audio/status' && method === 'GET') {
+      json(res, { ready: !!(audioPath && existsSync(audioPath)) }); return;
     }
 
     // ── GET /api/feedback/poll ───────────────────────────────────────
-    // CLI polls this until the user submits from the browser.
     if (url === '/api/feedback/poll' && method === 'GET') {
-      const fb = getFeedback();
-      json(res, { feedback: fb });
-      return;
+      json(res, { feedback: getFeedback() }); return;
     }
 
     // ── POST /api/transcribe ─────────────────────────────────────────
-    // Receives raw audio blob from browser MediaRecorder, returns transcript.
     if (url === '/api/transcribe' && method === 'POST') {
       try {
         const buf = await readBody(req);
@@ -65,8 +80,7 @@ export function createDashboardServer(stories: Story[], projectPath: string, pro
       return;
     }
 
-    // ── POST /api/feedback ──────────────────────────────────────────
-    // Browser submits the final (possibly edited) transcript.
+    // ── POST /api/feedback ───────────────────────────────────────────
     if (url === '/api/feedback' && method === 'POST') {
       try {
         const buf = await readBody(req);
@@ -79,40 +93,37 @@ export function createDashboardServer(stories: Story[], projectPath: string, pro
       return;
     }
 
-    // ── GET / ─── serve dashboard HTML ──────────────────────────────
+    // ── GET / ────────────────────────────────────────────────────────
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(getDashboardHTML(productUrl));
   });
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────
-
 function json(res: ServerResponse, data: unknown, status = 200): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
 }
-
 function error(res: ServerResponse, status: number, msg: string): void {
   json(res, { error: msg }, status);
 }
-
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (c) => chunks.push(c));
+    req.on('data', c => chunks.push(c));
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
 }
 
-// ── Dashboard HTML ───────────────────────────────────────────────────
-
 function getDashboardHTML(productUrl?: string): string {
   const productBanner = productUrl
     ? `<a class="product-link" href="${productUrl}" target="_blank" rel="noopener">
-        <span>&rarr; Open product</span><span class="product-url">${productUrl}</span>
+        <span class="product-arrow">&rarr;</span>
+        <span>Open product</span>
+        <span class="product-url">${productUrl}</span>
        </a>`
     : '';
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -124,39 +135,50 @@ function getDashboardHTML(productUrl?: string): string {
   :root{--bg:#0a0a0a;--surface:#141414;--border:#222;--teal:#00e5b0;--text:#f0f0f0;--muted:#888;--red:#ff5050;--yellow:#ffc800;}
   *{box-sizing:border-box;margin:0;padding:0;}
   body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased;}
+
   header{border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:12px;}
-  .wordmark{font-family:'JetBrains Mono',monospace;font-size:14px;}.wordmark span{color:var(--teal);}
+  .wordmark{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:500;}
+  .wordmark span{color:var(--teal);}
   .badge{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);background:var(--surface);border:1px solid var(--border);padding:3px 10px;border-radius:999px;}
-  .product-link{display:flex;align-items:center;gap:10px;margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--teal);border:1px solid rgba(0,229,176,.25);border-radius:6px;padding:6px 14px;text-decoration:none;transition:all .15s;}
+  .product-link{display:flex;align-items:center;gap:8px;margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--teal);border:1px solid rgba(0,229,176,.25);border-radius:6px;padding:7px 14px;text-decoration:none;transition:all .15s;}
   .product-link:hover{background:rgba(0,229,176,.08);border-color:var(--teal);}
   .product-url{color:var(--muted);}
-  main{max-width:960px;margin:0 auto;padding:32px 24px;display:grid;grid-template-columns:1fr 1fr;gap:32px;}
+
+  /* ── Audio player ── */
+  .audio-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:16px;}
+  .audio-bar .label{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted);white-space:nowrap;}
+  .audio-bar .label.ready{color:var(--teal);}
+  .audio-bar .label.loading{color:var(--yellow);}
+  audio{flex:1;height:36px;filter:invert(1) hue-rotate(130deg) brightness(0.85);}
+  audio::-webkit-media-controls-panel{background:var(--surface);}
+
+  main{max-width:960px;margin:0 auto;padding:28px 24px;display:grid;grid-template-columns:1fr 1fr;gap:28px;}
   @media(max-width:700px){main{grid-template-columns:1fr;}}
   .panel h2{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:14px;}
+
   .card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px 18px;margin-bottom:10px;}
   .card-title{font-weight:600;margin-bottom:4px;}
-  .card-files{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted);}
+  .card-files{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted);margin-top:4px;}
 
-  /* ── Feedback recorder ── */
-  .recorder{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:24px;}
-  .rec-status{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--muted);margin-bottom:16px;min-height:20px;}
+  /* ── Recorder ── */
+  .recorder{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:22px;}
+  .rec-status{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--muted);margin-bottom:14px;min-height:20px;}
   .rec-status.recording{color:var(--red);}
   .rec-status.transcribing{color:var(--yellow);}
   .rec-status.ready{color:var(--teal);}
-  .btn-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;}
+  .btn-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
   button{font-family:'Inter',sans-serif;font-size:13px;font-weight:500;padding:9px 16px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;transition:all .15s;}
   button:hover:not(:disabled){border-color:var(--teal);color:var(--teal);}
   button:disabled{opacity:0.35;cursor:not-allowed;}
   button.primary{background:var(--teal);color:var(--bg);border-color:var(--teal);font-weight:600;}
   button.primary:hover:not(:disabled){background:#00ffc4;}
-  button.danger{border-color:var(--red);color:var(--red);}
   .pulse{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--red);margin-right:6px;animation:pulse 1s ease-in-out infinite;}
   @keyframes pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.4;transform:scale(.8);}}
   textarea{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;color:var(--text);font-family:'Inter',sans-serif;font-size:14px;line-height:1.6;resize:vertical;min-height:100px;margin-bottom:12px;}
   textarea:focus{outline:none;border-color:var(--teal);}
   .submit-note{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted);}
 
-  /* ── Session history ── */
+  /* ── History ── */
   .session-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:18px;margin-bottom:12px;}
   .session-date{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--teal);margin-bottom:10px;}
   .task{padding:7px 0;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:flex-start;}
@@ -168,40 +190,43 @@ function getDashboardHTML(productUrl?: string): string {
   .task strong{display:block;font-weight:500;font-size:14px;}
   .task span{font-size:13px;color:var(--muted);}
   .empty{color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:13px;padding:12px 0;}
-
-  /* ── Submitted state ── */
   .submitted-msg{font-family:'JetBrains Mono',monospace;color:var(--teal);font-size:14px;padding:20px 0;text-align:center;}
 </style>
 </head>
 <body>
 <header>
   <div class="wordmark"><span>&gt;</span> DemoLoop</div>
-  <div class="badge" id="session-badge">session</div>
+  <div class="badge">session</div>
   ${productBanner}
 </header>
+
+<!-- Audio player bar — hidden until audio is ready -->
+<div class="audio-bar" id="audio-bar" style="display:none">
+  <span class="label" id="audio-label">Loading walkthrough...</span>
+  <audio id="audio-player" controls></audio>
+</div>
+
 <main>
-  <!-- Left: Stories + feedback recorder -->
   <div class="panel">
     <h2>Stories — this session</h2>
     <div id="stories"><p class="empty">Loading...</p></div>
 
     <h2 style="margin-top:24px;">Your feedback</h2>
-    <div class="recorder">
+    <div class="recorder" id="recorder-panel">
       <div class="rec-status" id="rec-status">&gt; Ready to record.</div>
       <div class="btn-row">
-        <button id="btn-record">&#9679; Record</button>
-        <button id="btn-stop" disabled>&#9632; Stop</button>
+        <button id="btn-record">&#9679;&nbsp; Record</button>
+        <button id="btn-stop" disabled>&#9632;&nbsp; Stop</button>
       </div>
       <textarea id="transcript" placeholder="Transcript will appear here — or type directly..."></textarea>
       <div class="btn-row">
         <button class="primary" id="btn-submit" disabled>Submit feedback &rarr;</button>
         <button id="btn-clear">Clear</button>
       </div>
-      <div class="submit-note" id="submit-note">Record or type your feedback, then submit to queue tasks.</div>
+      <div class="submit-note">Record or type your feedback, then submit to queue tasks.</div>
     </div>
   </div>
 
-  <!-- Right: Session history -->
   <div class="panel">
     <h2>Session history</h2>
     <div id="sessions"><p class="empty">Loading...</p></div>
@@ -209,7 +234,34 @@ function getDashboardHTML(productUrl?: string): string {
 </main>
 
 <script>
-  // ── Load stories + sessions ──────────────────────────────────────
+  // ── Audio ────────────────────────────────────────────────────────
+  const audioBar    = document.getElementById('audio-bar');
+  const audioPlayer = document.getElementById('audio-player');
+  const audioLabel  = document.getElementById('audio-label');
+
+  async function pollAudio() {
+    try {
+      const { ready } = await fetch('/api/audio/status').then(r => r.json());
+      if (ready) {
+        audioBar.style.display = 'flex';
+        audioPlayer.src = '/api/audio?t=' + Date.now();
+        audioLabel.textContent = '> Walkthrough ready';
+        audioLabel.className = 'label ready';
+        audioPlayer.play().catch(() => {
+          // Autoplay blocked — user sees the player and can hit play manually
+          audioLabel.textContent = '> Press play to start walkthrough';
+        });
+      } else {
+        audioLabel.textContent = '> Generating walkthrough...';
+        audioLabel.className = 'label loading';
+        audioBar.style.display = 'flex';
+        setTimeout(pollAudio, 2000);
+      }
+    } catch { setTimeout(pollAudio, 2000); }
+  }
+  pollAudio();
+
+  // ── Stories ──────────────────────────────────────────────────────
   async function loadStories() {
     const stories = await fetch('/api/stories').then(r => r.json()).catch(() => []);
     const el = document.getElementById('stories');
@@ -217,7 +269,7 @@ function getDashboardHTML(productUrl?: string): string {
     el.innerHTML = stories.map(s => \`
       <div class="card">
         <div class="card-title">\${esc(s.title)}</div>
-        \${s.filesChanged.length ? \`<div class="card-files">\${s.filesChanged.slice(0,4).map(esc).join(' &middot; ')}\${s.filesChanged.length > 4 ? \` +\${s.filesChanged.length - 4}\` : ''}</div>\` : ''}
+        \${s.filesChanged.length ? \`<div class="card-files">\${s.filesChanged.slice(0,5).map(esc).join(' &middot; ')}\${s.filesChanged.length > 5 ? \` +\${s.filesChanged.length-5} more\` : ''}</div>\` : ''}
       </div>\`).join('');
   }
 
@@ -240,66 +292,52 @@ function getDashboardHTML(productUrl?: string): string {
   loadSessions();
   setInterval(loadSessions, 5000);
 
-  // ── Recorder ────────────────────────────────────────────────────
-  let mediaRecorder = null;
-  let chunks = [];
+  // ── Recorder ─────────────────────────────────────────────────────
+  let mediaRecorder = null, chunks = [];
   const btnRecord = document.getElementById('btn-record');
   const btnStop   = document.getElementById('btn-stop');
   const btnSubmit = document.getElementById('btn-submit');
   const btnClear  = document.getElementById('btn-clear');
   const txArea    = document.getElementById('transcript');
   const status    = document.getElementById('rec-status');
-  const note      = document.getElementById('submit-note');
 
-  txArea.addEventListener('input', () => {
-    btnSubmit.disabled = txArea.value.trim().length === 0;
-  });
+  txArea.addEventListener('input', () => { btnSubmit.disabled = !txArea.value.trim(); });
 
   btnRecord.addEventListener('click', async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       chunks = [];
-      // Prefer webm/opus; fall back to whatever the browser supports
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus' : '';
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
       mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
       mediaRecorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
       mediaRecorder.onstop = async () => {
         stream.getTracks().forEach(t => t.stop());
         status.textContent = '> Transcribing...';
         status.className = 'rec-status transcribing';
-        btnRecord.disabled = false;
-        btnStop.disabled   = true;
-
+        btnRecord.disabled = false; btnStop.disabled = true;
         const blob = new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' });
         try {
-          const form = new FormData();
-          form.append('audio', blob, 'recording.webm');
           const res  = await fetch('/api/transcribe', { method:'POST', body: blob });
           const data = await res.json();
           if (data.transcript) {
             txArea.value = (txArea.value ? txArea.value + ' ' : '') + data.transcript;
             btnSubmit.disabled = false;
             status.textContent = '> Transcribed. Edit if needed, then submit.';
-            status.className   = 'rec-status ready';
+            status.className = 'rec-status ready';
           } else {
-            status.textContent = '> Transcription empty — try again or type manually.';
-            status.className   = 'rec-status';
+            status.textContent = '> Nothing detected — try again or type manually.';
+            status.className = 'rec-status';
           }
         } catch {
           status.textContent = '> Transcription failed — type feedback manually.';
-          status.className   = 'rec-status';
+          status.className = 'rec-status';
         }
       };
       mediaRecorder.start();
       status.innerHTML = '<span class="pulse"></span>Recording... click Stop when done.';
       status.className = 'rec-status recording';
-      btnRecord.disabled = true;
-      btnStop.disabled   = false;
-      btnSubmit.disabled = true;
-    } catch (err) {
-      status.textContent = '> Mic access denied — type feedback manually.';
-    }
+      btnRecord.disabled = true; btnStop.disabled = false; btnSubmit.disabled = true;
+    } catch { status.textContent = '> Mic access denied — type feedback manually.'; }
   });
 
   btnStop.addEventListener('click', () => {
@@ -307,27 +345,22 @@ function getDashboardHTML(productUrl?: string): string {
   });
 
   btnClear.addEventListener('click', () => {
-    txArea.value = '';
-    btnSubmit.disabled = true;
-    status.textContent = '> Ready to record.';
-    status.className = 'rec-status';
+    txArea.value = ''; btnSubmit.disabled = true;
+    status.textContent = '> Ready to record.'; status.className = 'rec-status';
   });
 
   btnSubmit.addEventListener('click', async () => {
     const feedback = txArea.value.trim();
     if (!feedback) return;
-    btnSubmit.disabled = true;
-    btnRecord.disabled = true;
-    status.textContent = '> Submitting...';
+    btnSubmit.disabled = true; btnRecord.disabled = true;
     try {
       await fetch('/api/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ feedback }),
       });
-      document.querySelector('.recorder').innerHTML =
-        '<div class="submitted-msg">&gt; Feedback received. Tasks queuing in the CLI...</div>';
-      note.textContent = '';
+      document.getElementById('recorder-panel').innerHTML =
+        '<div class="submitted-msg">&gt; Feedback received. Queuing tasks in CLI...</div>';
       setTimeout(loadSessions, 4000);
     } catch {
       status.textContent = '> Submit failed — try again.';

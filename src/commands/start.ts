@@ -2,7 +2,7 @@ import { join } from 'path';
 import chalk from 'chalk';
 import ora from 'ora';
 import { parseAgentOutput } from '../lib/agent-parser.js';
-import { speak, playAudio, buildDemoScript, AUDIO_EXT } from '../lib/tts.js';
+import { generateDemoScript, speak, AUDIO_EXT } from '../lib/tts.js';
 import { extractTasks, writeToBacklog, saveSession } from '../lib/task-writer.js';
 import { startDashboard, getFeedbackFromDashboard } from './dashboard.js';
 
@@ -13,7 +13,7 @@ interface StartOptions {
   url?: string;
 }
 
-const teal = chalk.hex('#00e5b0');
+const teal  = chalk.hex('#00e5b0');
 const muted = chalk.hex('#888888');
 
 export async function startCommand(options: StartOptions): Promise<void> {
@@ -35,8 +35,6 @@ export async function startCommand(options: StartOptions): Promise<void> {
   }
   parseSpinner.succeed(`Found ${agentOutput.stories.length} ${agentOutput.stories.length === 1 ? 'story' : 'stories'}`);
 
-  // 2. Print story list
-  console.log('');
   agentOutput.stories.forEach((s, i) => {
     console.log(`  ${muted(`[${i + 1}]`)} ${chalk.white(s.title)}`);
     if (s.filesChanged.length) {
@@ -47,36 +45,41 @@ export async function startCommand(options: StartOptions): Promise<void> {
   });
   console.log('');
 
-  // 3. Start dashboard — opens browser, handles mic recording
   const port = parseInt(process.env.DEMOLOOP_PORT ?? '4242', 10);
+  const audioPath = join(projectPath, '.demoloop', `demo-session.${AUDIO_EXT}`);
+
+  // 2. Start dashboard immediately — browser opens while audio generates in background
   const server = startDashboard({
     port: String(port),
     autoOpen: options.browser,
     stories: agentOutput.stories,
     projectPath,
     productUrl: options.url,
+    audioPath: options.voice ? audioPath : undefined,
   });
 
-  // 4. Generate and play TTS walkthrough
+  // 3. Generate demo script + TTS in background (dashboard polls /api/audio/status)
   if (options.voice) {
-    const script = buildDemoScript(agentOutput.stories);
-    const audioPath = join(projectPath, '.demoloop', `demo-session.${AUDIO_EXT}`);
+    (async () => {
+      const scriptSpinner = ora({ text: 'Writing demo script...', color: 'cyan' }).start();
+      try {
+        const script = await generateDemoScript(agentOutput.stories, options.url);
+        scriptSpinner.succeed('Demo script ready');
 
-    const ttsSpinner = ora({ text: 'Generating voice walkthrough...', color: 'cyan' }).start();
-    try {
-      await speak(script, audioPath);
-      ttsSpinner.succeed('Voice ready — playing now');
-      console.log('');
-      await playAudio(audioPath);
-    } catch (err) {
-      ttsSpinner.warn(`TTS skipped — ${err instanceof Error ? err.message : 'unknown error'}`);
-    }
+        const ttsSpinner = ora({ text: 'Generating voice walkthrough...', color: 'cyan' }).start();
+        await speak(script, audioPath);
+        ttsSpinner.succeed('Voice ready — playing in browser');
+      } catch (err) {
+        scriptSpinner.fail(`Voice skipped — ${err instanceof Error ? err.message : 'unknown error'}`);
+      }
+    })();
   }
 
-  // 5. Wait for feedback from the browser dashboard
+  // 4. Wait for feedback from browser
   console.log('');
   console.log(teal('> Waiting for your feedback in the browser...'));
   console.log(muted(`  http://localhost:${port}  — record or type, then hit Submit.`));
+  if (options.url) console.log(muted(`  Product open at: ${options.url}`));
   console.log('');
 
   const transcript = await getFeedbackFromDashboard(port);
@@ -85,16 +88,16 @@ export async function startCommand(options: StartOptions): Promise<void> {
   console.log(muted('  Feedback received:'));
   console.log(`  "${chalk.white(transcript)}"`);
 
-  // 6. Extract tasks
+  // 5. Extract tasks
   console.log('');
   const taskSpinner = ora({ text: 'Extracting tasks from feedback...', color: 'cyan' }).start();
   const tasks = await extractTasks(transcript, agentOutput.stories);
   taskSpinner.succeed(`${tasks.length} task${tasks.length === 1 ? '' : 's'} queued`);
 
-  // 7. Persist
+  // 6. Persist
   const session = {
     date: new Date().toISOString().replace('T', ' ').slice(0, 19),
-    stories: agentOutput.stories.map((s) => ({ id: s.id, title: s.title })),
+    stories: agentOutput.stories.map(s => ({ id: s.id, title: s.title })),
     transcript,
     tasks,
   };
@@ -104,16 +107,16 @@ export async function startCommand(options: StartOptions): Promise<void> {
 
   server.close();
 
-  // 8. Print summary
+  // 7. Print summary
   console.log('');
   console.log(teal('> Next sprint tasks:'));
-  tasks.forEach((t) => {
+  tasks.forEach(t => {
     const pc = t.priority === 'high' ? chalk.red : t.priority === 'medium' ? chalk.yellow : muted;
     console.log(`  ${pc(`[${t.priority.toUpperCase()}]`)} ${chalk.white(t.title)}`);
     console.log(`         ${muted(t.description)}`);
   });
   console.log('');
-  console.log(muted(`  Backlog updated: BACKLOG.md`));
-  console.log(muted(`  Session saved:   ${sessionPath}`));
+  console.log(muted(`  Backlog: BACKLOG.md`));
+  console.log(muted(`  Session: ${sessionPath}`));
   console.log('');
 }

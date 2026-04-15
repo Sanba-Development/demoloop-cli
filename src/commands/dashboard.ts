@@ -9,6 +9,7 @@ interface DashboardOptions {
   stories?: Story[];
   projectPath?: string;
   productUrl?: string;
+  audioPath?: string;
 }
 
 /** CLI command: demoloop dashboard */
@@ -24,7 +25,7 @@ export function startDashboard(options: DashboardOptions): Server {
   const teal = chalk.hex('#00e5b0');
   const muted = chalk.hex('#888888');
 
-  const server = createDashboardServer(stories, projectPath, options.productUrl);
+  const server = createDashboardServer(stories, projectPath, options.productUrl, options.audioPath);
 
   server.listen(port, '127.0.0.1', async () => {
     const dashUrl = `http://localhost:${port}`;

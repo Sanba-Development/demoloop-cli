@@ -1,9 +1,16 @@
 import OpenAI from 'openai';
 import { writeFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
-import { execSync } from 'child_process';
+import { dirname } from 'path';
+import { execSync, spawnSync } from 'child_process';
 
 const VOICE = (process.env.DEMOLOOP_VOICE as OpenAI.Audio.Speech.SpeechCreateParams['voice']) || 'onyx';
+
+// WAV on Windows (SoundPlayer is native, no extra tools needed).
+// MP3 on Mac/Linux (afplay/paplay handle it fine).
+const FORMAT: OpenAI.Audio.Speech.SpeechCreateParams['response_format'] =
+  process.platform === 'win32' ? 'wav' : 'mp3';
+
+export const AUDIO_EXT = FORMAT === 'wav' ? 'wav' : 'mp3';
 
 export async function speak(text: string, outputPath: string): Promise<void> {
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -12,11 +19,11 @@ export async function speak(text: string, outputPath: string): Promise<void> {
     model: 'tts-1',
     voice: VOICE,
     input: text,
-    response_format: 'mp3',
+    response_format: FORMAT,
   });
 
   const buffer = Buffer.from(await response.arrayBuffer());
-  mkdirSync(outputPath.replace(/\/[^/]+$/, ''), { recursive: true });
+  mkdirSync(dirname(outputPath), { recursive: true });
   writeFileSync(outputPath, buffer);
 }
 
@@ -24,16 +31,21 @@ export function playAudio(filePath: string): void {
   const platform = process.platform;
   try {
     if (platform === 'win32') {
-      execSync(`powershell -c "(New-Object Media.SoundPlayer '${filePath}').PlaySync()"`, {
-        stdio: 'ignore',
-      });
+      // WAV-only SoundPlayer — works on every Windows 10/11 machine, no installs needed.
+      const escaped = filePath.replace(/\\/g, '\\\\');
+      spawnSync('powershell', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `(New-Object System.Media.SoundPlayer '${escaped}').PlaySync()`,
+      ], { stdio: 'ignore' });
     } else if (platform === 'darwin') {
-      execSync(`afplay "${filePath}"`, { stdio: 'ignore' });
+      spawnSync('afplay', [filePath], { stdio: 'ignore' });
     } else {
-      execSync(`aplay "${filePath}" 2>/dev/null || paplay "${filePath}"`, { stdio: 'ignore' });
+      // Linux: try paplay (PulseAudio) then aplay (ALSA)
+      const pa = spawnSync('paplay', [filePath], { stdio: 'ignore' });
+      if (pa.status !== 0) spawnSync('aplay', [filePath], { stdio: 'ignore' });
     }
   } catch {
-    // Audio playback failed silently — transcript still shown
+    // Playback failed silently — transcript is still shown in dashboard.
   }
 }
 

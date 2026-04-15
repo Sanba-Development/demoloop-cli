@@ -145,12 +145,17 @@ function getDashboardHTML(productUrl?: string): string {
   .product-url{color:var(--muted);}
 
   /* ── Audio player ── */
-  .audio-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:16px;}
-  .audio-bar .label{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted);white-space:nowrap;}
-  .audio-bar .label.ready{color:var(--teal);}
-  .audio-bar .label.loading{color:var(--yellow);}
-  audio{flex:1;height:36px;filter:invert(1) hue-rotate(130deg) brightness(0.85);}
-  audio::-webkit-media-controls-panel{background:var(--surface);}
+  .audio-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;gap:14px;}
+  .audio-label{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted);white-space:nowrap;min-width:200px;}
+  .audio-label.ready{color:var(--teal);}
+  .audio-label.loading{color:var(--yellow);}
+  .play-btn{width:36px;height:36px;border-radius:50%;background:var(--teal);border:none;color:var(--bg);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px;transition:background .15s;}
+  .play-btn:hover{background:#00ffc4;}
+  .play-btn:disabled{opacity:0.35;cursor:not-allowed;background:var(--surface);color:var(--muted);}
+  .progress-wrap{flex:1;display:flex;align-items:center;gap:10px;}
+  .progress{flex:1;height:4px;background:var(--border);border-radius:2px;cursor:pointer;position:relative;}
+  .progress-fill{height:100%;background:var(--teal);border-radius:2px;width:0%;transition:width .1s linear;pointer-events:none;}
+  .time{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);white-space:nowrap;}
 
   main{max-width:960px;margin:0 auto;padding:28px 24px;display:grid;grid-template-columns:1fr 1fr;gap:28px;}
   @media(max-width:700px){main{grid-template-columns:1fr;}}
@@ -200,10 +205,17 @@ function getDashboardHTML(productUrl?: string): string {
   ${productBanner}
 </header>
 
-<!-- Audio player bar — hidden until audio is ready -->
-<div class="audio-bar" id="audio-bar" style="display:none">
-  <span class="label" id="audio-label">Loading walkthrough...</span>
-  <audio id="audio-player" controls></audio>
+<!-- Audio player bar -->
+<div class="audio-bar" id="audio-bar">
+  <span class="audio-label loading" id="audio-label">&gt; Generating walkthrough...</span>
+  <button class="play-btn" id="play-btn" disabled title="Play walkthrough">&#9654;</button>
+  <div class="progress-wrap">
+    <div class="progress" id="progress-bar">
+      <div class="progress-fill" id="progress-fill"></div>
+    </div>
+    <span class="time" id="time-display">0:00 / 0:00</span>
+  </div>
+  <audio id="audio-player" preload="auto"></audio>
 </div>
 
 <main>
@@ -234,27 +246,64 @@ function getDashboardHTML(productUrl?: string): string {
 </main>
 
 <script>
-  // ── Audio ────────────────────────────────────────────────────────
-  const audioBar    = document.getElementById('audio-bar');
-  const audioPlayer = document.getElementById('audio-player');
-  const audioLabel  = document.getElementById('audio-label');
+  // ── Audio player ─────────────────────────────────────────────────
+  const audioPlayer  = document.getElementById('audio-player');
+  const audioLabel   = document.getElementById('audio-label');
+  const playBtn      = document.getElementById('play-btn');
+  const progressBar  = document.getElementById('progress-bar');
+  const progressFill = document.getElementById('progress-fill');
+  const timeDisplay  = document.getElementById('time-display');
+
+  function fmt(s) {
+    const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+    return m + ':' + String(sec).padStart(2, '0');
+  }
+
+  audioPlayer.addEventListener('timeupdate', () => {
+    if (!audioPlayer.duration) return;
+    const pct = (audioPlayer.currentTime / audioPlayer.duration) * 100;
+    progressFill.style.width = pct + '%';
+    timeDisplay.textContent = fmt(audioPlayer.currentTime) + ' / ' + fmt(audioPlayer.duration);
+  });
+
+  audioPlayer.addEventListener('ended', () => {
+    playBtn.innerHTML = '&#9654;';
+    progressFill.style.width = '100%';
+  });
+
+  playBtn.addEventListener('click', () => {
+    if (audioPlayer.paused) {
+      audioPlayer.play();
+      playBtn.innerHTML = '&#10074;&#10074;';
+    } else {
+      audioPlayer.pause();
+      playBtn.innerHTML = '&#9654;';
+    }
+  });
+
+  progressBar.addEventListener('click', (e) => {
+    if (!audioPlayer.duration) return;
+    const rect = progressBar.getBoundingClientRect();
+    const pct  = (e.clientX - rect.left) / rect.width;
+    audioPlayer.currentTime = pct * audioPlayer.duration;
+  });
 
   async function pollAudio() {
     try {
       const { ready } = await fetch('/api/audio/status').then(r => r.json());
       if (ready) {
-        audioBar.style.display = 'flex';
         audioPlayer.src = '/api/audio?t=' + Date.now();
-        audioLabel.textContent = '> Walkthrough ready';
-        audioLabel.className = 'label ready';
-        audioPlayer.play().catch(() => {
-          // Autoplay blocked — user sees the player and can hit play manually
-          audioLabel.textContent = '> Press play to start walkthrough';
+        audioLabel.textContent = '> Walkthrough ready — press play';
+        audioLabel.className = 'audio-label ready';
+        playBtn.disabled = false;
+        // Try autoplay — browsers may block it, play button is the fallback
+        audioPlayer.play().then(() => {
+          playBtn.innerHTML = '&#10074;&#10074;';
+          audioLabel.textContent = '> Playing walkthrough';
+        }).catch(() => {
+          audioLabel.textContent = '> Press &#9654; to start walkthrough';
         });
       } else {
-        audioLabel.textContent = '> Generating walkthrough...';
-        audioLabel.className = 'label loading';
-        audioBar.style.display = 'flex';
         setTimeout(pollAudio, 2000);
       }
     } catch { setTimeout(pollAudio, 2000); }

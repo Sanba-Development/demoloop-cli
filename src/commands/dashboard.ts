@@ -1,6 +1,7 @@
 import { Server } from 'http';
 import chalk from 'chalk';
-import { createDashboardServer } from '../dashboard/server.js';
+import { createDashboardServer, markAudioReady } from '../dashboard/server.js';
+export { markAudioReady };
 import type { Story } from '../lib/agent-parser.js';
 
 interface DashboardOptions {

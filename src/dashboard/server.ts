@@ -13,6 +13,10 @@ export function getFeedback(): string | null {
   return fb;
 }
 
+// Set to true only after speak() fully writes the file
+let audioReady = false;
+export function markAudioReady(): void { audioReady = true; }
+
 export function createDashboardServer(
   stories: Story[],
   projectPath: string,
@@ -42,23 +46,44 @@ export function createDashboardServer(
     }
 
     // ── GET /api/audio ──────────────────────────────────────────────
-    // Serves the generated TTS file directly to the browser <audio> element.
-    if (url === '/api/audio' && method === 'GET') {
-      if (!audioPath || !existsSync(audioPath)) {
+    // Supports Range requests — required by Chrome/Edge to play audio.
+    if (url.startsWith('/api/audio') && !url.startsWith('/api/audio/status') && method === 'GET') {
+      if (!audioPath || !audioReady || !existsSync(audioPath)) {
         res.writeHead(404); res.end(); return;
       }
       const data = readFileSync(audioPath);
-      res.writeHead(200, {
-        'Content-Type': 'audio/mpeg',
-        'Content-Length': data.length,
-        'Cache-Control': 'no-cache',
-      });
-      res.end(data); return;
+      const total = data.length;
+      const rangeHeader = req.headers['range'];
+
+      if (rangeHeader) {
+        const [rawStart, rawEnd] = rangeHeader.replace(/bytes=/, '').split('-');
+        const start = parseInt(rawStart, 10);
+        const end   = rawEnd ? parseInt(rawEnd, 10) : total - 1;
+        const chunk = data.slice(start, end + 1);
+        res.writeHead(206, {
+          'Content-Type':   'audio/mpeg',
+          'Content-Range':  `bytes ${start}-${end}/${total}`,
+          'Accept-Ranges':  'bytes',
+          'Content-Length': chunk.length,
+          'Cache-Control':  'no-cache',
+        });
+        res.end(chunk);
+      } else {
+        res.writeHead(200, {
+          'Content-Type':   'audio/mpeg',
+          'Content-Length': total,
+          'Accept-Ranges':  'bytes',
+          'Cache-Control':  'no-cache',
+        });
+        res.end(data);
+      }
+      return;
     }
 
     // ── GET /api/audio/status ────────────────────────────────────────
+    // Uses in-memory flag — only true after speak() fully writes the file.
     if (url === '/api/audio/status' && method === 'GET') {
-      json(res, { ready: !!(audioPath && existsSync(audioPath)) }); return;
+      json(res, { ready: audioReady }); return;
     }
 
     // ── GET /api/feedback/poll ───────────────────────────────────────

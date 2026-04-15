@@ -5,7 +5,7 @@ import ora from 'ora';
 import { parseAgentOutput } from '../lib/agent-parser.js';
 import { generateDemoScript, speak, AUDIO_EXT } from '../lib/tts.js';
 import { extractTasks, writeToBacklog, saveSession } from '../lib/task-writer.js';
-import { startDashboard, getFeedbackFromDashboard } from './dashboard.js';
+import { startDashboard, getFeedbackFromDashboard, markAudioReady } from './dashboard.js';
 
 interface StartOptions {
   path: string;
@@ -75,6 +75,7 @@ export async function startCommand(options: StartOptions): Promise<void> {
 
         const ttsSpinner = ora({ text: 'Generating voice walkthrough...', color: 'cyan' }).start();
         await speak(script, audioPath);
+        markAudioReady();
         ttsSpinner.succeed('Voice ready — playing in browser');
       } catch (err) {
         scriptSpinner.fail(`Voice skipped — ${err instanceof Error ? err.message : 'unknown error'}`);

@@ -268,16 +268,24 @@ function getDashboardHTML(productUrl?: string): string {
 
   audioPlayer.addEventListener('ended', () => {
     playBtn.innerHTML = '&#9654;';
-    progressFill.style.width = '100%';
+    setLabel('> Walkthrough done');
+    audioLabel.className = 'audio-label ready';
   });
 
   playBtn.addEventListener('click', () => {
     if (audioPlayer.paused) {
-      audioPlayer.play();
-      playBtn.innerHTML = '&#10074;&#10074;';
+      audioPlayer.play().then(() => {
+        playBtn.innerHTML = '&#10074;&#10074;';
+        setLabel('> Playing walkthrough');
+        audioLabel.className = 'audio-label ready';
+      }).catch(err => {
+        setLabel('> Playback error: ' + err.message);
+      });
     } else {
       audioPlayer.pause();
       playBtn.innerHTML = '&#9654;';
+      setLabel('> Paused');
+      audioLabel.className = 'audio-label ready';
     }
   });
 
@@ -288,21 +296,34 @@ function getDashboardHTML(productUrl?: string): string {
     audioPlayer.currentTime = pct * audioPlayer.duration;
   });
 
+  function setLabel(html) { audioLabel.innerHTML = html; }
+
+  // Enable play button only once audio is actually loaded and decodable
+  audioPlayer.addEventListener('canplay', () => {
+    playBtn.disabled = false;
+    setLabel('> Walkthrough ready &mdash; press &#9654;');
+    audioLabel.className = 'audio-label ready';
+    // Attempt autoplay; browser may block — button is always there as fallback
+    audioPlayer.play().then(() => {
+      playBtn.innerHTML = '&#10074;&#10074;';
+      setLabel('> Playing walkthrough');
+    }).catch(() => { /* autoplay blocked — user presses play */ });
+  });
+
+  audioPlayer.addEventListener('error', () => {
+    setLabel('> Audio error — try refreshing');
+    audioLabel.className = 'audio-label';
+  });
+
   async function pollAudio() {
     try {
       const { ready } = await fetch('/api/audio/status').then(r => r.json());
       if (ready) {
+        // Setting src triggers the load; canplay fires when ready to play
         audioPlayer.src = '/api/audio?t=' + Date.now();
-        audioLabel.textContent = '> Walkthrough ready — press play';
-        audioLabel.className = 'audio-label ready';
-        playBtn.disabled = false;
-        // Try autoplay — browsers may block it, play button is the fallback
-        audioPlayer.play().then(() => {
-          playBtn.innerHTML = '&#10074;&#10074;';
-          audioLabel.textContent = '> Playing walkthrough';
-        }).catch(() => {
-          audioLabel.textContent = '> Press &#9654; to start walkthrough';
-        });
+        audioPlayer.load();
+        setLabel('> Loading audio...');
+        audioLabel.className = 'audio-label loading';
       } else {
         setTimeout(pollAudio, 2000);
       }

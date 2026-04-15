@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+*.mp3
+*.wav
+*.webm
+.demoloop/sessions/

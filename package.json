@@ -1,0 +1,32 @@
+{
+  "name": "demoloop",
+  "version": "0.1.0",
+  "description": "AI agent demo layer — review what your agent built with voice, not logs",
+  "type": "module",
+  "bin": {
+    "demoloop": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "keywords": ["ai", "agent", "cli", "demo", "claude", "cursor", "devin"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0",
+    "dotenv": "^16.5.0",
+    "openai": "^4.97.0",
+    "open": "^10.1.2",
+    "ora": "^8.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
+  }
+}

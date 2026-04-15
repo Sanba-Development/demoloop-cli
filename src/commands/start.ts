@@ -1,4 +1,5 @@
 import { join } from 'path';
+import { existsSync, unlinkSync } from 'fs';
 import chalk from 'chalk';
 import ora from 'ora';
 import { parseAgentOutput } from '../lib/agent-parser.js';
@@ -47,6 +48,12 @@ export async function startCommand(options: StartOptions): Promise<void> {
 
   const port = parseInt(process.env.DEMOLOOP_PORT ?? '4242', 10);
   const audioPath = join(projectPath, '.demoloop', `demo-session.${AUDIO_EXT}`);
+
+  // Delete stale audio from previous sessions so the browser doesn't load a bad file
+  for (const ext of ['mp3', 'wav']) {
+    const stale = join(projectPath, '.demoloop', `demo-session.${ext}`);
+    if (existsSync(stale)) { try { unlinkSync(stale); } catch { /* ignore */ } }
+  }
 
   // 2. Start dashboard immediately — browser opens while audio generates in background
   const server = startDashboard({

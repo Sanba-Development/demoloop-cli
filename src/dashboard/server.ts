@@ -311,7 +311,10 @@ function getDashboardHTML(productUrl?: string): string {
   });
 
   audioPlayer.addEventListener('error', () => {
-    setLabel('> Audio error — try refreshing');
+    const codes = {1:'ABORTED', 2:'NETWORK', 3:'DECODE', 4:'FORMAT_NOT_SUPPORTED'};
+    const e = audioPlayer.error;
+    const detail = e ? (codes[e.code] || 'ERR_' + e.code) : 'UNKNOWN';
+    setLabel('> Audio error (' + detail + ') — refresh once voice is ready');
     audioLabel.className = 'audio-label';
   });
 

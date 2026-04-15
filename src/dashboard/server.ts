@@ -15,7 +15,7 @@ export function getFeedback(): string | null {
   return fb;
 }
 
-export function createDashboardServer(stories: Story[], projectPath: string) {
+export function createDashboardServer(stories: Story[], projectPath: string, productUrl?: string) {
   return createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? '/';
     const method = req.method ?? 'GET';
@@ -81,7 +81,7 @@ export function createDashboardServer(stories: Story[], projectPath: string) {
 
     // ── GET / ─── serve dashboard HTML ──────────────────────────────
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(getDashboardHTML());
+    res.end(getDashboardHTML(productUrl));
   });
 }
 
@@ -107,7 +107,12 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
 
 // ── Dashboard HTML ───────────────────────────────────────────────────
 
-function getDashboardHTML(): string {
+function getDashboardHTML(productUrl?: string): string {
+  const productBanner = productUrl
+    ? `<a class="product-link" href="${productUrl}" target="_blank" rel="noopener">
+        <span>&rarr; Open product</span><span class="product-url">${productUrl}</span>
+       </a>`
+    : '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -122,6 +127,9 @@ function getDashboardHTML(): string {
   header{border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:12px;}
   .wordmark{font-family:'JetBrains Mono',monospace;font-size:14px;}.wordmark span{color:var(--teal);}
   .badge{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);background:var(--surface);border:1px solid var(--border);padding:3px 10px;border-radius:999px;}
+  .product-link{display:flex;align-items:center;gap:10px;margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--teal);border:1px solid rgba(0,229,176,.25);border-radius:6px;padding:6px 14px;text-decoration:none;transition:all .15s;}
+  .product-link:hover{background:rgba(0,229,176,.08);border-color:var(--teal);}
+  .product-url{color:var(--muted);}
   main{max-width:960px;margin:0 auto;padding:32px 24px;display:grid;grid-template-columns:1fr 1fr;gap:32px;}
   @media(max-width:700px){main{grid-template-columns:1fr;}}
   .panel h2{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:14px;}
@@ -169,6 +177,7 @@ function getDashboardHTML(): string {
 <header>
   <div class="wordmark"><span>&gt;</span> DemoLoop</div>
   <div class="badge" id="session-badge">session</div>
+  ${productBanner}
 </header>
 <main>
   <!-- Left: Stories + feedback recorder -->

@@ -8,6 +8,7 @@ interface DashboardOptions {
   autoOpen?: boolean;
   stories?: Story[];
   projectPath?: string;
+  productUrl?: string;
 }
 
 /** CLI command: demoloop dashboard */
@@ -23,15 +24,20 @@ export function startDashboard(options: DashboardOptions): Server {
   const teal = chalk.hex('#00e5b0');
   const muted = chalk.hex('#888888');
 
-  const server = createDashboardServer(stories, projectPath);
+  const server = createDashboardServer(stories, projectPath, options.productUrl);
 
   server.listen(port, '127.0.0.1', async () => {
-    const url = `http://localhost:${port}`;
-    console.log(teal(`> Dashboard: ${url}`));
+    const dashUrl = `http://localhost:${port}`;
+    console.log(teal(`> Dashboard: ${dashUrl}`));
+    if (options.productUrl) {
+      console.log(chalk.hex('#888888')(`  Product:   ${options.productUrl}`));
+    }
 
     if (options.autoOpen !== false) {
       const { default: open } = await import('open');
-      await open(url);
+      // Open product URL first so it lands as the active tab
+      if (options.productUrl) await open(options.productUrl);
+      await open(dashUrl);
     }
   });
 

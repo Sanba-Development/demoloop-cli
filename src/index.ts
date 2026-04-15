@@ -21,6 +21,7 @@ program
   .command('start')
   .description('Start a demo session for the latest agent output')
   .option('-p, --path <dir>', 'project path to analyze', process.cwd())
+  .option('-u, --url <url>', 'product URL to open alongside the dashboard')
   .option('--no-voice', 'skip TTS, print transcript only')
   .option('--no-browser', 'skip opening the dashboard in browser')
   .action(startCommand);

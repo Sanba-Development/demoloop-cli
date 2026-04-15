@@ -10,6 +10,7 @@ interface StartOptions {
   path: string;
   voice: boolean;
   browser: boolean;
+  url?: string;
 }
 
 const teal = chalk.hex('#00e5b0');
@@ -53,6 +54,7 @@ export async function startCommand(options: StartOptions): Promise<void> {
     autoOpen: options.browser,
     stories: agentOutput.stories,
     projectPath,
+    productUrl: options.url,
   });
 
   // 4. Generate and play TTS walkthrough
@@ -65,7 +67,7 @@ export async function startCommand(options: StartOptions): Promise<void> {
       await speak(script, audioPath);
       ttsSpinner.succeed('Voice ready — playing now');
       console.log('');
-      playAudio(audioPath);
+      await playAudio(audioPath);
     } catch (err) {
       ttsSpinner.warn(`TTS skipped — ${err instanceof Error ? err.message : 'unknown error'}`);
     }

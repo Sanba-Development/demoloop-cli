@@ -27,25 +27,23 @@ export async function speak(text: string, outputPath: string): Promise<void> {
   writeFileSync(outputPath, buffer);
 }
 
-export function playAudio(filePath: string): void {
+export async function playAudio(filePath: string): Promise<void> {
   const platform = process.platform;
   try {
-    if (platform === 'win32') {
-      // WAV-only SoundPlayer — works on every Windows 10/11 machine, no installs needed.
-      const escaped = filePath.replace(/\\/g, '\\\\');
-      spawnSync('powershell', [
-        '-NoProfile', '-NonInteractive', '-Command',
-        `(New-Object System.Media.SoundPlayer '${escaped}').PlaySync()`,
-      ], { stdio: 'ignore' });
-    } else if (platform === 'darwin') {
+    if (platform === 'darwin') {
       spawnSync('afplay', [filePath], { stdio: 'ignore' });
-    } else {
-      // Linux: try paplay (PulseAudio) then aplay (ALSA)
+    } else if (platform === 'linux') {
       const pa = spawnSync('paplay', [filePath], { stdio: 'ignore' });
       if (pa.status !== 0) spawnSync('aplay', [filePath], { stdio: 'ignore' });
+    } else {
+      // Windows: open with the default media player (async — plays while dashboard loads)
+      const { default: open } = await import('open');
+      await open(filePath);
+      // Give the media player a moment to start before we move on
+      await new Promise((r) => setTimeout(r, 1500));
     }
   } catch {
-    // Playback failed silently — transcript is still shown in dashboard.
+    // Playback failed silently — voice transcript is shown in dashboard.
   }
 }
 

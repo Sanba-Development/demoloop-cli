@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage, Server } from 'http';
 import type { Story } from '../lib/agent-parser.js';
 
-const REALTIME_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17';
+const REALTIME_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview';
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 2000;
 
@@ -96,7 +96,6 @@ function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: s
           voice: 'alloy',
           input_audio_format: 'pcm16',
           output_audio_format: 'pcm16',
-          input_audio_transcription: { model: 'whisper-1' },
           turn_detection: {
             type: 'server_vad',
             threshold: 0.5,

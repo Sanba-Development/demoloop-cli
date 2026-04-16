@@ -88,10 +88,15 @@ export function getLiveDashboardHTML(productUrl?: string): string {
 
   let isConnected = false;
   let micStream   = null;
-  let audioCtx    = null;
+  let micCtx      = null;   // AudioContext for mic worklet
   let workletNode = null;
   let outputQueue = [];
   let isPlaying   = false;
+
+  // Output AudioContext — created now, but Chrome suspends it until a user gesture.
+  // We resume it after mic permission (which IS a user gesture) and on any click.
+  const outputCtx = new AudioContext({ sampleRate: 24000 });
+  document.addEventListener('click', () => outputCtx.resume(), { capture: true });
 
   ws.onopen = () => { /* wait for session.ready */ };
 
@@ -180,7 +185,11 @@ export function getLiveDashboardHTML(productUrl?: string): string {
   async function startMic() {
     try {
       micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioCtx  = new AudioContext({ sampleRate: 24000 });
+      // User just clicked "Allow" on the mic dialog — this is a user gesture.
+      // Resume the output context so any queued AI audio starts playing.
+      await outputCtx.resume();
+
+      micCtx = new AudioContext({ sampleRate: 24000 });
 
       const workletCode = \`
         class PCM16Processor extends AudioWorkletProcessor {
@@ -198,11 +207,11 @@ export function getLiveDashboardHTML(productUrl?: string): string {
       \`;
       const blob = new Blob([workletCode], { type: 'application/javascript' });
       const url  = URL.createObjectURL(blob);
-      await audioCtx.audioWorklet.addModule(url);
+      await micCtx.audioWorklet.addModule(url);
       URL.revokeObjectURL(url);
 
-      const src = audioCtx.createMediaStreamSource(micStream);
-      workletNode = new AudioWorkletNode(audioCtx, 'pcm16');
+      const src = micCtx.createMediaStreamSource(micStream);
+      workletNode = new AudioWorkletNode(micCtx, 'pcm16');
 
       workletNode.port.onmessage = (e) => {
         if (!isConnected || ws.readyState !== WebSocket.OPEN) return;
@@ -212,7 +221,7 @@ export function getLiveDashboardHTML(productUrl?: string): string {
       };
 
       src.connect(workletNode);
-      workletNode.connect(audioCtx.destination);
+      workletNode.connect(micCtx.destination);
       micBtn.disabled = false;
       micBtn.classList.add('active');
     } catch (err) {
@@ -221,7 +230,7 @@ export function getLiveDashboardHTML(productUrl?: string): string {
   }
 
   micBtn.addEventListener('click', () => {
-    if (!audioCtx) return;
+    if (!micCtx) return;
     if (micBtn.classList.contains('active')) {
       // Mute
       workletNode.disconnect();
@@ -230,7 +239,7 @@ export function getLiveDashboardHTML(productUrl?: string): string {
       statusTxt.className = 'status-text';
     } else {
       // Unmute
-      workletNode.connect(audioCtx.destination);
+      workletNode.connect(micCtx.destination);
       micBtn.classList.add('active');
       statusTxt.textContent = 'Session live — speak anytime';
       statusTxt.className = 'status-text live';
@@ -253,11 +262,11 @@ export function getLiveDashboardHTML(productUrl?: string): string {
     if (!outputQueue.length) { isPlaying = false; return; }
     isPlaying = true;
     const samples  = outputQueue.shift();
-    const buf      = audioCtx.createBuffer(1, samples.length, 24000);
+    const buf      = outputCtx.createBuffer(1, samples.length, 24000);
     buf.copyToChannel(samples, 0);
-    const src      = audioCtx.createBufferSource();
+    const src      = outputCtx.createBufferSource();
     src.buffer     = buf;
-    src.connect(audioCtx.destination);
+    src.connect(outputCtx.destination);
     src.onended    = drainQueue;
     src.start();
   }

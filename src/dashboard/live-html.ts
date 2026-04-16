@@ -136,16 +136,33 @@ export function getLiveDashboardHTML(productUrl?: string): string {
         finalizeAssistantMessage();
         break;
 
+      case 'demoloop.error':
+        connBadge.textContent = 'Error';
+        connBadge.className = 'badge';
+        statusTxt.textContent = msg.message || 'Connection failed';
+        statusTxt.className = 'status-text';
+        appendMessage('system', '> Error: ' + (msg.message || 'unknown'));
+        break;
+
       case 'error':
-        appendMessage('system', '> Error: ' + (msg.error?.message || msg.message || 'unknown'));
+        // OpenAI-side error event
+        appendMessage('system', '> OpenAI error: ' + (msg.error?.message || JSON.stringify(msg.error) || 'unknown'));
         break;
     }
   };
 
-  ws.onclose = () => {
-    connBadge.textContent = 'Disconnected';
-    connBadge.className = 'badge';
-    statusTxt.textContent = 'Session ended.';
+  ws.onclose = (e) => {
+    console.log('WS closed', e.code, e.reason);
+    if (connBadge.textContent !== 'Error') {
+      connBadge.textContent = isConnected ? 'Ended' : 'Failed';
+      connBadge.className = 'badge';
+    }
+    if (!isConnected) {
+      statusTxt.textContent = 'Could not connect — check terminal for error details';
+      appendMessage('system', '> Connection failed (code ' + e.code + '). Check the terminal for details.');
+    } else {
+      statusTxt.textContent = 'Session ended.';
+    }
     micBtn.disabled = true;
   };
 

@@ -52,10 +52,12 @@ Your role:
 function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: string): void {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    browserWs.send(JSON.stringify({ type: 'error', message: 'OPENAI_API_KEY not set' }));
+    browserWs.send(JSON.stringify({ type: 'demoloop.error', message: 'OPENAI_API_KEY not set' }));
     browserWs.close();
     return;
   }
+
+  console.log('\n  [realtime] Connecting to OpenAI Realtime API...');
 
   const openaiWs = new WebSocket(REALTIME_URL, {
     headers: {
@@ -65,6 +67,7 @@ function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: s
   });
 
   openaiWs.on('open', () => {
+    console.log('  [realtime] Connected to OpenAI. Configuring session...');
     // Configure the session: VAD, voice, system prompt
     openaiWs.send(JSON.stringify({
       type: 'session.update',
@@ -109,12 +112,16 @@ function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: s
     if (openaiWs.readyState === WebSocket.OPEN) openaiWs.send(data);
   });
 
-  // Cleanup
   browserWs.on('close', () => { if (openaiWs.readyState === WebSocket.OPEN) openaiWs.close(); });
-  openaiWs.on('close', () => { if (browserWs.readyState === WebSocket.OPEN) browserWs.close(); });
   openaiWs.on('error', (err) => {
+    console.error('  [realtime] OpenAI WebSocket error:', err.message);
     if (browserWs.readyState === WebSocket.OPEN) {
-      browserWs.send(JSON.stringify({ type: 'error', message: err.message }));
+      browserWs.send(JSON.stringify({ type: 'demoloop.error', message: err.message }));
     }
+  });
+
+  openaiWs.on('close', (code, reason) => {
+    console.log(`  [realtime] OpenAI connection closed: ${code} ${reason.toString()}`);
+    if (browserWs.readyState === WebSocket.OPEN) browserWs.close();
   });
 }

@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage, Server } from 'http';
 import type { Story } from '../lib/agent-parser.js';
 
-const REALTIME_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview';
+const REALTIME_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17';
 
 /**
  * Attaches a WebSocket server to the existing HTTP server.
@@ -67,14 +67,14 @@ function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: s
   });
 
   openaiWs.on('open', () => {
-    console.log('  [realtime] Connected to OpenAI. Configuring session...');
-    // Configure the session: VAD, voice, system prompt
+    console.log('  [realtime] Connected to OpenAI. Sending session.update...');
+    // Configure the session — wait for session.updated before sending anything else
     openaiWs.send(JSON.stringify({
       type: 'session.update',
       session: {
         modalities: ['text', 'audio'],
         instructions: buildSystemPrompt(stories, sprintSummary),
-        voice: 'onyx',
+        voice: 'alloy',                  // alloy is safest — available on all realtime tiers
         input_audio_format: 'pcm16',
         output_audio_format: 'pcm16',
         input_audio_transcription: { model: 'whisper-1' },
@@ -86,24 +86,41 @@ function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: s
         },
       },
     }));
-
-    // Kick off the demo by asking the model to start
-    openaiWs.send(JSON.stringify({
-      type: 'conversation.item.create',
-      item: {
-        type: 'message',
-        role: 'user',
-        content: [{ type: 'input_text', text: 'Start the demo.' }],
-      },
-    }));
-    openaiWs.send(JSON.stringify({ type: 'response.create' }));
-
-    // Tell the browser the session is live
-    browserWs.send(JSON.stringify({ type: 'session.ready' }));
   });
 
-  // OpenAI → browser
+  // OpenAI → browser (and log to terminal for debugging)
   openaiWs.on('message', (data) => {
+    // Parse and log every event type for visibility
+    try {
+      const evt = JSON.parse(data.toString());
+      console.log(`  [realtime] ← ${evt.type}`);
+
+      if (evt.type === 'session.updated') {
+        // Session is confirmed — now kick off the demo and tell browser we're live
+        console.log('  [realtime] Session configured. Starting demo...');
+        openaiWs.send(JSON.stringify({
+          type: 'conversation.item.create',
+          item: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Start the demo.' }],
+          },
+        }));
+        openaiWs.send(JSON.stringify({ type: 'response.create' }));
+        if (browserWs.readyState === WebSocket.OPEN) {
+          browserWs.send(JSON.stringify({ type: 'session.ready' }));
+        }
+      }
+
+      if (evt.type === 'error') {
+        const errMsg = evt.error?.message ?? JSON.stringify(evt.error ?? evt);
+        console.error('  [realtime] OpenAI error event:', errMsg);
+        if (browserWs.readyState === WebSocket.OPEN) {
+          browserWs.send(JSON.stringify({ type: 'demoloop.error', message: errMsg }));
+        }
+      }
+    } catch { /* binary frame — forward as-is */ }
+
     if (browserWs.readyState === WebSocket.OPEN) browserWs.send(data);
   });
 

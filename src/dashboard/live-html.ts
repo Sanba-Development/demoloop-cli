@@ -106,7 +106,15 @@ export function getLiveDashboardHTML(productUrl?: string): string {
         connBadge.className = 'badge connected';
         statusTxt.textContent = 'Session live — tap mic to speak';
         statusTxt.className = 'status-text live';
-        await startMic();
+        if (!micStream) await startMic();  // only init mic once
+        break;
+
+      case 'demoloop.reconnecting':
+        connBadge.textContent = 'Reconnecting...';
+        connBadge.className = 'badge';
+        statusTxt.textContent = \`Connection interrupted — reconnecting (\${msg.attempt}/\${msg.max})...\`;
+        statusTxt.className = 'status-text';
+        appendMessage('system', \`> Connection interrupted — reconnecting (\${msg.attempt}/\${msg.max})...\`);
         break;
 
       case 'response.audio.delta':
@@ -153,17 +161,19 @@ export function getLiveDashboardHTML(productUrl?: string): string {
 
   ws.onclose = (e) => {
     console.log('WS closed', e.code, e.reason);
-    if (connBadge.textContent !== 'Error') {
+    const badgeText = connBadge.textContent;
+    if (badgeText !== 'Error') {
       connBadge.textContent = isConnected ? 'Ended' : 'Failed';
       connBadge.className = 'badge';
     }
     if (!isConnected) {
       statusTxt.textContent = 'Could not connect — check terminal for error details';
       appendMessage('system', '> Connection failed (code ' + e.code + '). Check the terminal for details.');
-    } else {
+    } else if (badgeText !== 'Error') {
       statusTxt.textContent = 'Session ended.';
     }
     micBtn.disabled = true;
+    if (micStream) micStream.getTracks().forEach(t => t.stop());
   };
 
   // ── Microphone capture (PCM16 @ 24kHz) ────────────────────────

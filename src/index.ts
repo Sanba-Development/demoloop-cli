@@ -4,6 +4,7 @@ import { Command } from 'commander';
 import { startCommand } from './commands/start.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { initCommand } from './commands/init.js';
+import { liveCommand } from './commands/live.js';
 
 const program = new Command();
 
@@ -31,5 +32,13 @@ program
   .description('Open the web dashboard')
   .option('--port <number>', 'port for local dashboard', '4242')
   .action(dashboardCommand);
+
+program
+  .command('live')
+  .description('Start a live voice conversation about the sprint (uses OpenAI Realtime API)')
+  .option('-p, --path <dir>', 'project path to analyze', process.cwd())
+  .option('-u, --url <url>', 'product URL to open alongside the session')
+  .option('--port <number>', 'port for local server', '4242')
+  .action(liveCommand);
 
 program.parse();

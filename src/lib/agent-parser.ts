@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { parseDemoSessionMd } from './session-md-parser.js';
 
 export interface Story {
   id: string;
@@ -15,13 +16,25 @@ export interface AgentOutput {
   rawDiff: string;
   commitMessages: string[];
   agentLogSnippet?: string;
+  source?: 'demo-session.md' | 'git';
 }
 
 /**
- * Extracts stories from the current git repo by reading recent commits,
- * diffs, and any agent log files (AGENT_LOG.md, .claude/sessions, etc.)
+ * Extracts stories — prefers demo-session.md written by the agent,
+ * falls back to git commit parsing.
  */
 export function parseAgentOutput(projectPath: string): AgentOutput {
+  // Prefer demo-session.md when present — it's intentional and richer than git parsing
+  const demoSession = parseDemoSessionMd(projectPath);
+  if (demoSession) {
+    return {
+      stories: demoSession.stories,
+      rawDiff: '',
+      commitMessages: [],
+      agentLogSnippet: demoSession.sprintSummary || undefined,
+      source: 'demo-session.md',
+    };
+  }
   const stories: Story[] = [];
   let rawDiff = '';
   let commitMessages: string[] = [];
@@ -97,7 +110,7 @@ export function parseAgentOutput(projectPath: string): AgentOutput {
     });
   }
 
-  return { stories, rawDiff, commitMessages, agentLogSnippet };
+  return { stories, rawDiff, commitMessages, agentLogSnippet, source: 'git' };
 }
 
 function cleanCommitTitle(msg: string): string {

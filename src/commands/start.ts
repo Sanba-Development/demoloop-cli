@@ -90,16 +90,25 @@ export async function startCommand(options: StartOptions): Promise<void> {
   if (options.url) console.log(muted(`  Product open at: ${options.url}`));
   console.log('');
 
-  const transcript = await getFeedbackFromDashboard(port);
+  const { transcript, storyFeedback } = await getFeedbackFromDashboard(port);
 
   console.log('');
-  console.log(muted('  Feedback received:'));
-  console.log(`  "${chalk.white(transcript)}"`);
+  if (storyFeedback && storyFeedback.length > 0) {
+    storyFeedback.forEach(f => {
+      console.log(`  ${teal(`[${f.storyTitle}]`)} ${chalk.white(f.transcript)}`);
+    });
+  } else {
+    console.log(muted('  Feedback received:'));
+    console.log(`  "${chalk.white(transcript)}"`);
+  }
 
   // 5. Extract tasks
   console.log('');
   const taskSpinner = ora({ text: 'Extracting tasks from feedback...', color: 'cyan' }).start();
-  const tasks = await extractTasks(transcript, agentOutput.stories);
+  const tasks = await extractTasks(
+    storyFeedback && storyFeedback.length > 0 ? storyFeedback : transcript,
+    agentOutput.stories
+  );
   taskSpinner.succeed(`${tasks.length} task${tasks.length === 1 ? '' : 's'} queued`);
 
   // 6. Persist
@@ -107,6 +116,7 @@ export async function startCommand(options: StartOptions): Promise<void> {
     date: new Date().toISOString().replace('T', ' ').slice(0, 19),
     stories: agentOutput.stories.map(s => ({ id: s.id, title: s.title })),
     transcript,
+    storyFeedback,
     tasks,
   };
 

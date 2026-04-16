@@ -2,10 +2,17 @@ import OpenAI from 'openai';
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
+export interface StoryFeedback {
+  storyId: string;
+  storyTitle: string;
+  transcript: string;
+}
+
 export interface SessionRecord {
   date: string;
   stories: Array<{ id: string; title: string }>;
-  transcript: string;
+  transcript: string;           // combined for backwards compat
+  storyFeedback?: StoryFeedback[];
   tasks: Task[];
 }
 
@@ -18,10 +25,11 @@ export interface Task {
 }
 
 /**
- * Uses GPT-4o to extract structured tasks from spoken feedback transcript.
+ * Extracts tasks from a combined transcript OR an array of per-story feedback.
+ * Per-story feedback produces better attribution.
  */
 export async function extractTasks(
-  transcript: string,
+  transcriptOrFeedback: string | StoryFeedback[],
   stories: Array<{ id: string; title: string; description: string }>
 ): Promise<Task[]> {
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -29,6 +37,15 @@ export async function extractTasks(
   const storySummary = stories
     .map((s) => `- [${s.id}] ${s.title}: ${s.description}`)
     .join('\n');
+
+  let feedbackText: string;
+  if (Array.isArray(transcriptOrFeedback)) {
+    feedbackText = transcriptOrFeedback
+      .map(f => `[Story: ${f.storyTitle}]\n"${f.transcript}"`)
+      .join('\n\n');
+  } else {
+    feedbackText = `"${transcriptOrFeedback}"`;
+  }
 
   const completion = await client.chat.completions.create({
     model: 'gpt-4o',
@@ -41,7 +58,7 @@ Only include concrete, actionable items. Ignore filler speech. Deduplicate.`,
       },
       {
         role: 'user',
-        content: `Sprint stories reviewed:\n${storySummary}\n\nSpoken feedback transcript:\n"${transcript}"`,
+        content: `Sprint stories reviewed:\n${storySummary}\n\nFeedback:\n${feedbackText}`,
       },
     ],
     response_format: { type: 'json_object' },

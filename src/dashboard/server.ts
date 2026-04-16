@@ -1,29 +1,37 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, statSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { Story } from '../lib/agent-parser.js';
 import type { SessionRecord } from '../lib/task-writer.js';
 import { transcribe } from '../lib/stt.js';
-
-let feedbackQueue: string | null = null;
-export function getFeedback(): string | null {
-  const fb = feedbackQueue;
-  feedbackQueue = null;
-  return fb;
-}
+import { attachRealtimeProxy } from './realtime-proxy.js';
+import { getLiveDashboardHTML } from './live-html.js';
 
 // Set to true only after speak() fully writes the file
 let audioReady = false;
 export function markAudioReady(): void { audioReady = true; }
 
+interface FeedbackPayload {
+  transcript: string;
+  storyFeedback?: Array<{ storyId: string; storyTitle: string; transcript: string }>;
+}
+let feedbackPayload: FeedbackPayload | null = null;
+export function getFeedback(): FeedbackPayload | null {
+  const fb = feedbackPayload;
+  feedbackPayload = null;
+  return fb;
+}
+
 export function createDashboardServer(
   stories: Story[],
   projectPath: string,
   productUrl?: string,
-  audioPath?: string
+  audioPath?: string,
+  sprintSummary?: string
 ) {
-  return createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    const req_ = req; const res_ = res; // alias for closure
     const url = req.url ?? '/';
     const method = req.method ?? 'GET';
 
@@ -88,7 +96,7 @@ export function createDashboardServer(
 
     // ── GET /api/feedback/poll ───────────────────────────────────────
     if (url === '/api/feedback/poll' && method === 'GET') {
-      json(res, { feedback: getFeedback() }); return;
+      json(res, { payload: getFeedback() }); return;
     }
 
     // ── POST /api/transcribe ─────────────────────────────────────────
@@ -109,8 +117,11 @@ export function createDashboardServer(
     if (url === '/api/feedback' && method === 'POST') {
       try {
         const buf = await readBody(req);
-        const { feedback } = JSON.parse(buf.toString('utf8'));
-        feedbackQueue = feedback ?? '';
+        const body = JSON.parse(buf.toString('utf8'));
+        feedbackPayload = {
+          transcript: body.transcript ?? body.feedback ?? '',
+          storyFeedback: body.storyFeedback ?? undefined,
+        };
         json(res, { ok: true });
       } catch {
         error(res, 400, 'Invalid body');
@@ -118,10 +129,20 @@ export function createDashboardServer(
       return;
     }
 
+    // ── GET /live ────────────────────────────────────────────────────
+    if (url === '/live') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(getLiveDashboardHTML(productUrl));
+      return;
+    }
+
     // ── GET / ────────────────────────────────────────────────────────
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(getDashboardHTML(productUrl));
   });
+
+  attachRealtimeProxy(server, stories, sprintSummary);
+  return server;
 }
 
 function json(res: ServerResponse, data: unknown, status = 200): void {
@@ -186,9 +207,13 @@ function getDashboardHTML(productUrl?: string): string {
   @media(max-width:700px){main{grid-template-columns:1fr;}}
   .panel h2{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:14px;}
 
-  .card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px 18px;margin-bottom:10px;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px 18px;margin-bottom:10px;cursor:pointer;transition:border-color .15s,background .15s;}
+  .card:hover{border-color:rgba(0,229,176,.4);}
+  .card.selected{border-color:var(--teal);background:rgba(0,229,176,.05);}
   .card-title{font-weight:600;margin-bottom:4px;}
   .card-files{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted);margin-top:4px;}
+  .card-feedback-badge{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--teal);margin-top:6px;display:none;}
+  .card.has-feedback .card-feedback-badge{display:block;}
 
   /* ── Recorder ── */
   .recorder{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:22px;}
@@ -250,17 +275,20 @@ function getDashboardHTML(productUrl?: string): string {
 
     <h2 style="margin-top:24px;">Your feedback</h2>
     <div class="recorder" id="recorder-panel">
-      <div class="rec-status" id="rec-status">&gt; Ready to record.</div>
-      <div class="btn-row">
+      <div class="rec-status" id="feedback-target">&gt; Select a story above, or give general feedback.</div>
+      <div class="rec-status" id="rec-status" style="margin-top:6px;">&gt; Ready to record.</div>
+      <div class="btn-row" style="margin-top:12px;">
         <button id="btn-record">&#9679;&nbsp; Record</button>
         <button id="btn-stop" disabled>&#9632;&nbsp; Stop</button>
       </div>
       <textarea id="transcript" placeholder="Transcript will appear here — or type directly..."></textarea>
       <div class="btn-row">
-        <button class="primary" id="btn-submit" disabled>Submit feedback &rarr;</button>
+        <button class="primary" id="btn-save-story" disabled>Save &rarr;</button>
         <button id="btn-clear">Clear</button>
       </div>
-      <div class="submit-note">Record or type your feedback, then submit to queue tasks.</div>
+      <div class="submit-note" id="saved-count" style="margin-bottom:12px;"></div>
+      <button class="primary" id="btn-submit-all" disabled style="width:100%">Submit all feedback &rarr;</button>
+      <div class="submit-note" style="margin-top:8px;">Save feedback per story, then submit all at once.</div>
     </div>
   </div>
 
@@ -359,17 +387,43 @@ function getDashboardHTML(productUrl?: string): string {
   }
   pollAudio();
 
-  // ── Stories ──────────────────────────────────────────────────────
+  // ── Stories + per-story selection ───────────────────────────────
+  let allStories = [];
+  let selectedStoryId = null;
+  const storyFeedbacks = {}; // storyId -> transcript
+
   async function loadStories() {
-    const stories = await fetch('/api/stories').then(r => r.json()).catch(() => []);
+    allStories = await fetch('/api/stories').then(r => r.json()).catch(() => []);
+    renderStories();
+  }
+
+  function renderStories() {
     const el = document.getElementById('stories');
-    if (!stories.length) { el.innerHTML = '<p class="empty">&gt; No stories yet.</p>'; return; }
-    el.innerHTML = stories.map(s => \`
-      <div class="card">
+    if (!allStories.length) { el.innerHTML = '<p class="empty">&gt; No stories yet.</p>'; return; }
+    el.innerHTML = allStories.map(s => \`
+      <div class="card \${selectedStoryId === s.id ? 'selected' : ''} \${storyFeedbacks[s.id] ? 'has-feedback' : ''}"
+           data-id="\${esc(s.id)}" onclick="selectStory('\${esc(s.id)}')">
         <div class="card-title">\${esc(s.title)}</div>
         \${s.filesChanged.length ? \`<div class="card-files">\${s.filesChanged.slice(0,5).map(esc).join(' &middot; ')}\${s.filesChanged.length > 5 ? \` +\${s.filesChanged.length-5} more\` : ''}</div>\` : ''}
+        <div class="card-feedback-badge">&gt; feedback recorded</div>
       </div>\`).join('');
   }
+
+  window.selectStory = function(id) {
+    if (selectedStoryId === id) { selectedStoryId = null; }
+    else { selectedStoryId = id; }
+    renderStories();
+    const story = allStories.find(s => s.id === id);
+    const label = selectedStoryId && story ? \`Feedback for: \${story.title}\` : 'General feedback';
+    document.getElementById('feedback-target').textContent = \`> \${label}\`;
+    // Pre-fill textarea with existing feedback for this story if any
+    if (selectedStoryId && storyFeedbacks[selectedStoryId]) {
+      txArea.value = storyFeedbacks[selectedStoryId];
+    } else if (!selectedStoryId) {
+      txArea.value = storyFeedbacks['__general__'] || '';
+    }
+    btnSubmitAll.disabled = Object.keys(storyFeedbacks).length === 0 && !txArea.value.trim();
+  };
 
   async function loadSessions() {
     const sessions = await fetch('/api/sessions').then(r => r.json()).catch(() => []);
@@ -392,14 +446,25 @@ function getDashboardHTML(productUrl?: string): string {
 
   // ── Recorder ─────────────────────────────────────────────────────
   let mediaRecorder = null, chunks = [];
-  const btnRecord = document.getElementById('btn-record');
-  const btnStop   = document.getElementById('btn-stop');
-  const btnSubmit = document.getElementById('btn-submit');
-  const btnClear  = document.getElementById('btn-clear');
-  const txArea    = document.getElementById('transcript');
-  const status    = document.getElementById('rec-status');
+  const btnRecord    = document.getElementById('btn-record');
+  const btnStop      = document.getElementById('btn-stop');
+  const btnSaveStory = document.getElementById('btn-save-story');
+  const btnSubmitAll = document.getElementById('btn-submit-all');
+  const btnClear     = document.getElementById('btn-clear');
+  const txArea       = document.getElementById('transcript');
+  const status       = document.getElementById('rec-status');
+  const savedCount   = document.getElementById('saved-count');
 
-  txArea.addEventListener('input', () => { btnSubmit.disabled = !txArea.value.trim(); });
+  function updateSavedCount() {
+    const n = Object.keys(storyFeedbacks).length;
+    savedCount.textContent = n > 0 ? \`\${n} feedback\${n > 1 ? 's' : ''} saved\` : '';
+    btnSubmitAll.disabled = n === 0 && !txArea.value.trim();
+  }
+
+  txArea.addEventListener('input', () => {
+    btnSaveStory.disabled = !txArea.value.trim();
+    updateSavedCount();
+  });
 
   btnRecord.addEventListener('click', async () => {
     try {
@@ -419,8 +484,9 @@ function getDashboardHTML(productUrl?: string): string {
           const data = await res.json();
           if (data.transcript) {
             txArea.value = (txArea.value ? txArea.value + ' ' : '') + data.transcript;
-            btnSubmit.disabled = false;
-            status.textContent = '> Transcribed. Edit if needed, then submit.';
+            btnSaveStory.disabled = false;
+            updateSavedCount();
+            status.textContent = '> Transcribed. Edit if needed, then save.';
             status.className = 'rec-status ready';
           } else {
             status.textContent = '> Nothing detected — try again or type manually.';
@@ -434,7 +500,7 @@ function getDashboardHTML(productUrl?: string): string {
       mediaRecorder.start();
       status.innerHTML = '<span class="pulse"></span>Recording... click Stop when done.';
       status.className = 'rec-status recording';
-      btnRecord.disabled = true; btnStop.disabled = false; btnSubmit.disabled = true;
+      btnRecord.disabled = true; btnStop.disabled = false; btnSaveStory.disabled = true;
     } catch { status.textContent = '> Mic access denied — type feedback manually.'; }
   });
 
@@ -442,27 +508,49 @@ function getDashboardHTML(productUrl?: string): string {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   });
 
+  btnSaveStory.addEventListener('click', () => {
+    const text = txArea.value.trim();
+    if (!text) return;
+    const key = selectedStoryId || '__general__';
+    storyFeedbacks[key] = text;
+    txArea.value = '';
+    btnSaveStory.disabled = true;
+    renderStories();
+    updateSavedCount();
+    status.textContent = selectedStoryId
+      ? \`> Saved for "\${allStories.find(s=>s.id===selectedStoryId)?.title || selectedStoryId}"\`
+      : '> Saved as general feedback';
+    status.className = 'rec-status ready';
+  });
+
   btnClear.addEventListener('click', () => {
-    txArea.value = ''; btnSubmit.disabled = true;
+    txArea.value = ''; btnSaveStory.disabled = true;
     status.textContent = '> Ready to record.'; status.className = 'rec-status';
   });
 
-  btnSubmit.addEventListener('click', async () => {
-    const feedback = txArea.value.trim();
-    if (!feedback) return;
-    btnSubmit.disabled = true; btnRecord.disabled = true;
+  btnSubmitAll.addEventListener('click', async () => {
+    const generalTranscript = storyFeedbacks['__general__'] || txArea.value.trim() || '';
+    const storyFeedbackArr = allStories
+      .filter(s => storyFeedbacks[s.id])
+      .map(s => ({ storyId: s.id, storyTitle: s.title, transcript: storyFeedbacks[s.id] }));
+
+    if (!generalTranscript && storyFeedbackArr.length === 0) return;
+    btnSubmitAll.disabled = true; btnRecord.disabled = true;
     try {
       await fetch('/api/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feedback }),
+        body: JSON.stringify({
+          transcript: generalTranscript,
+          storyFeedback: storyFeedbackArr.length > 0 ? storyFeedbackArr : undefined,
+        }),
       });
       document.getElementById('recorder-panel').innerHTML =
-        '<div class="submitted-msg">&gt; Feedback received. Queuing tasks in CLI...</div>';
+        '<div class="submitted-msg">&gt; All feedback submitted. Queuing tasks in CLI...</div>';
       setTimeout(loadSessions, 4000);
     } catch {
       status.textContent = '> Submit failed — try again.';
-      btnSubmit.disabled = false;
+      btnSubmitAll.disabled = false;
     }
   });
 

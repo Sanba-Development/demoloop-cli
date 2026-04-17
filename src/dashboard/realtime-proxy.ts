@@ -67,10 +67,10 @@ function startProxy(
 ): void {
   console.log(`\n  [realtime] Connecting (${MODEL})...`);
 
-  // Track whether the AI is currently generating audio.
-  // While true, we drop incoming mic frames from the browser —
-  // sending audio input while the AI is generating causes an OpenAI server_error.
-  let aiSpeaking = false;
+  // Block mic input from the very start — before response.created arrives there is
+  // a race window where the AudioWorklet can already be streaming, which causes a
+  // server_error.  Cleared only after response.done / response.cancelled.
+  let aiSpeaking = true;
 
   const openaiWs = new WebSocket(REALTIME_URL, {
     headers: {
@@ -88,6 +88,13 @@ function startProxy(
         modalities: ['text', 'audio'],
         voice: 'alloy',
         instructions: buildSystemPrompt(stories, sprintSummary),
+        input_audio_transcription: { model: 'whisper-1' },
+        turn_detection: {
+          type: 'server_vad',
+          threshold: 0.5,
+          prefix_padding_ms: 300,
+          silence_duration_ms: 600,
+        },
       },
     }));
   });
@@ -103,12 +110,20 @@ function startProxy(
       // Track AI speaking state so we can gate mic input
       if (evt.type === 'response.created')                        aiSpeaking = true;
       if (evt.type === 'response.done' || evt.type === 'response.cancelled') {
-        aiSpeaking = false;
-        console.log('  [realtime] AI finished — mic input enabled');
+        // Flush any audio buffered during the AI's turn, then re-enable mic after
+        // a short grace period so echo / ambient noise doesn't immediately trigger VAD.
+        openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.clear' }));
+        setTimeout(() => {
+          aiSpeaking = false;
+          console.log('  [realtime] AI finished — mic input enabled');
+        }, 500);
       }
 
       if (evt.type === 'session.updated') {
         console.log('  [realtime] Session ready. Starting demo...');
+        // Clear any audio that slipped in before session was fully configured,
+        // then kick off the initial AI greeting.
+        openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.clear' }));
         openaiWs.send(JSON.stringify({ type: 'response.create' }));
         if (browserWs.readyState === WebSocket.OPEN) {
           browserWs.send(JSON.stringify({ type: 'session.ready' }));

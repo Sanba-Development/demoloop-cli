@@ -184,7 +184,9 @@ export function getLiveDashboardHTML(productUrl?: string): string {
   // ── Microphone capture (PCM16 @ 24kHz) ────────────────────────
   async function startMic() {
     try {
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
       // User just clicked "Allow" on the mic dialog — this is a user gesture.
       // Resume the output context so any queued AI audio starts playing.
       await outputCtx.resume();

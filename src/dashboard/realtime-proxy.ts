@@ -17,23 +17,22 @@ async function findRealtimeModel(apiKey: string): Promise<string> {
     if (!res.ok) throw new Error(`${res.status}`);
     const data = await res.json() as { data: Array<{ id: string }> };
 
-    const ids = data.data
-      .map((m) => m.id)
-      .filter((id) => id.includes('realtime'))
-      .sort()
-      .reverse(); // newest date suffix first
-
+    const ids = data.data.map((m) => m.id).filter((id) => id.includes('realtime'));
     console.log('  [realtime] Available realtime models:', ids.join(', ') || '(none)');
 
-    // Prefer full gpt-4o with a date stamp (most stable)
-    const dated = ids.find((id) => !id.includes('mini') && /\d{4}-\d{2}-\d{2}/.test(id));
-    if (dated) return dated;
+    // 1. gpt-4o-realtime-preview with date stamp — proven tier, pick newest
+    const gpt4oDated = ids
+      .filter((id) => id.startsWith('gpt-4o-realtime-preview-') && !id.includes('mini'))
+      .sort().reverse();
+    if (gpt4oDated.length) return gpt4oDated[0];
 
-    // Fall back to undated alias
-    const alias = ids.find((id) => !id.includes('mini'));
-    if (alias) return alias;
+    // 2. gpt-4o-realtime-preview alias (no date)
+    if (ids.includes('gpt-4o-realtime-preview')) return 'gpt-4o-realtime-preview';
 
-    // Last resort: whatever is there
+    // 3. Any non-mini realtime model
+    const nonMini = ids.filter((id) => !id.includes('mini')).sort().reverse();
+    if (nonMini.length) return nonMini[0];
+
     return ids[0] ?? 'gpt-4o-realtime-preview';
   } catch (err) {
     console.warn('  [realtime] Could not fetch model list:', String(err));
@@ -157,23 +156,10 @@ function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: s
 
         if (evt.type === 'session.updated') {
           console.log('  [realtime] Session configured. Starting demo...');
-          const startText = sessionEverStarted
-            ? 'The connection was briefly interrupted. Please continue the demo.'
-            : 'Start the demo.';
           sessionEverStarted = true;
 
-          openaiWs!.send(JSON.stringify({
-            type: 'conversation.item.create',
-            item: {
-              type: 'message',
-              role: 'user',
-              content: [{ type: 'input_text', text: startText }],
-            },
-          }));
-          openaiWs!.send(JSON.stringify({
-            type: 'response.create',
-            response: { modalities: ['text', 'audio'] },
-          }));
+          // Kick off the first response — instructions tell the AI to start immediately
+          openaiWs!.send(JSON.stringify({ type: 'response.create' }));
 
           if (browserWs.readyState === WebSocket.OPEN) {
             browserWs.send(JSON.stringify({ type: 'session.ready' }));

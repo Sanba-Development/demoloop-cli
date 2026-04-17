@@ -67,7 +67,11 @@ function startProxy(
 ): void {
   console.log(`\n  [realtime] Connecting (${MODEL})...`);
 
-  // Use a local variable — no closure mutation, mirrors the working test script
+  // Track whether the AI is currently generating audio.
+  // While true, we drop incoming mic frames from the browser —
+  // sending audio input while the AI is generating causes an OpenAI server_error.
+  let aiSpeaking = false;
+
   const openaiWs = new WebSocket(REALTIME_URL, {
     headers: {
       'Authorization': `Bearer ${apiKey}`,
@@ -75,7 +79,7 @@ function startProxy(
     },
   });
 
-  // ── OpenAI connection events ─────────────────────────────────
+  // ── OpenAI → browser ─────────────────────────────────────────
   openaiWs.on('open', () => {
     console.log('  [realtime] Connected. Configuring session...');
     openaiWs.send(JSON.stringify({
@@ -89,10 +93,19 @@ function startProxy(
   });
 
   openaiWs.on('message', (data) => {
-    // Try to parse JSON events; binary audio frames fall through as-is
+    let asText: string | null = null;
+
     try {
       const evt = JSON.parse(data.toString());
+      asText = data.toString(); // it was a text frame — keep as string for forwarding
       console.log(`  [realtime] ← ${evt.type}`);
+
+      // Track AI speaking state so we can gate mic input
+      if (evt.type === 'response.created')                        aiSpeaking = true;
+      if (evt.type === 'response.done' || evt.type === 'response.cancelled') {
+        aiSpeaking = false;
+        console.log('  [realtime] AI finished — mic input enabled');
+      }
 
       if (evt.type === 'session.updated') {
         console.log('  [realtime] Session ready. Starting demo...');
@@ -105,11 +118,14 @@ function startProxy(
       if (evt.type === 'error') {
         console.error('  [realtime] OpenAI error:', JSON.stringify(evt.error ?? evt, null, 2));
       }
-    } catch { /* binary frame — fall through */ }
+    } catch { /* binary audio frame */ }
 
-    // Forward every frame (text or binary) to the browser
+    // Forward to browser.
+    // IMPORTANT: send JSON events as strings (text WS frame), not Buffer (binary frame).
+    // The browser uses JSON.parse(event.data) — if we send a Buffer it arrives as
+    // ArrayBuffer and parse fails silently, dropping all audio/transcript events.
     if (browserWs.readyState === WebSocket.OPEN) {
-      browserWs.send(data);
+      browserWs.send(asText ?? data);
     }
   });
 
@@ -124,7 +140,18 @@ function startProxy(
 
   // ── Browser → OpenAI ─────────────────────────────────────────
   browserWs.on('message', (data) => {
-    if (openaiWs.readyState === WebSocket.OPEN) openaiWs.send(data);
+    if (openaiWs.readyState !== WebSocket.OPEN) return;
+
+    // Drop mic audio while the AI is speaking.
+    // Chrome auto-grants mic on localhost — the AudioWorklet starts sending
+    // input_audio_buffer.append within milliseconds of session.ready, which
+    // races with the AI's ongoing audio generation and causes a server_error.
+    try {
+      const msg = JSON.parse(data.toString());
+      if (aiSpeaking && msg.type === 'input_audio_buffer.append') return;
+    } catch { /* binary frame from browser — forward as-is */ }
+
+    openaiWs.send(data);
   });
 
   browserWs.on('close', () => {

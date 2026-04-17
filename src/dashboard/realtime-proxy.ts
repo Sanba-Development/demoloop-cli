@@ -2,9 +2,44 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage, Server } from 'http';
 import type { Story } from '../lib/agent-parser.js';
 
-const REALTIME_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01';
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 2000;
+
+/**
+ * Query the OpenAI models list and return the best available Realtime model.
+ * Prefers full gpt-4o (not mini), newest date snapshot, falls back to alias.
+ */
+async function findRealtimeModel(apiKey: string): Promise<string> {
+  try {
+    const res = await fetch('https://api.openai.com/v1/models', {
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+    const data = await res.json() as { data: Array<{ id: string }> };
+
+    const ids = data.data
+      .map((m) => m.id)
+      .filter((id) => id.includes('realtime'))
+      .sort()
+      .reverse(); // newest date suffix first
+
+    console.log('  [realtime] Available realtime models:', ids.join(', ') || '(none)');
+
+    // Prefer full gpt-4o with a date stamp (most stable)
+    const dated = ids.find((id) => !id.includes('mini') && /\d{4}-\d{2}-\d{2}/.test(id));
+    if (dated) return dated;
+
+    // Fall back to undated alias
+    const alias = ids.find((id) => !id.includes('mini'));
+    if (alias) return alias;
+
+    // Last resort: whatever is there
+    return ids[0] ?? 'gpt-4o-realtime-preview';
+  } catch (err) {
+    console.warn('  [realtime] Could not fetch model list:', String(err));
+    return 'gpt-4o-realtime-preview';
+  }
+}
 
 /**
  * Attaches a WebSocket server to the existing HTTP server.
@@ -61,8 +96,9 @@ function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: s
 
   let openaiWs: WebSocket | null = null;
   let retryCount = 0;
-  let sessionEverStarted = false;   // did we get at least one session.updated?
-  let browserClosed = false;        // track if browser initiated close
+  let sessionEverStarted = false;
+  let browserClosed = false;
+  let realtimeUrl: string | null = null;  // resolved once, reused on retry
 
   // ── Browser → OpenAI (set up once, stays alive across reconnects) ──
   browserWs.on('message', (data) => {
@@ -74,12 +110,19 @@ function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: s
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
   });
 
-  function connect() {
+  async function connect() {
     if (browserClosed) return;
+
+    // Discover model on first connect only
+    if (!realtimeUrl) {
+      const model = await findRealtimeModel(apiKey!);
+      realtimeUrl = `wss://api.openai.com/v1/realtime?model=${model}`;
+      console.log(`  [realtime] Using model: ${model}`);
+    }
 
     console.log(`\n  [realtime] Connecting to OpenAI Realtime API... (attempt ${retryCount + 1})`);
 
-    openaiWs = new WebSocket(REALTIME_URL, {
+    openaiWs = new WebSocket(realtimeUrl, {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'OpenAI-Beta': 'realtime=v1',
@@ -87,7 +130,7 @@ function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: s
     });
 
     openaiWs.on('open', () => {
-      console.log('  [realtime] Connected to OpenAI. Sending session.update...');
+      console.log('  [realtime] Connected. Sending session.update...');
       openaiWs!.send(JSON.stringify({
         type: 'session.update',
         session: {
@@ -114,9 +157,8 @@ function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: s
 
         if (evt.type === 'session.updated') {
           console.log('  [realtime] Session configured. Starting demo...');
-          // On reconnect, tell the AI to pick up where it left off
           const startText = sessionEverStarted
-            ? 'The connection was briefly interrupted. Please continue the demo from where you left off.'
+            ? 'The connection was briefly interrupted. Please continue the demo.'
             : 'Start the demo.';
           sessionEverStarted = true;
 
@@ -140,7 +182,11 @@ function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: s
 
         if (evt.type === 'error') {
           console.error('  [realtime] OpenAI error:\n' + JSON.stringify(evt.error ?? evt, null, 2));
-          // Don't surface to browser yet — we may reconnect successfully
+          // If model_not_found, clear cached URL so next retry re-discovers
+          if (evt.error?.code === 'model_not_found') {
+            console.error('  [realtime] Model not found — will re-discover on next attempt');
+            realtimeUrl = null;
+          }
         }
       } catch { /* binary frame — forward as-is */ }
 
@@ -148,13 +194,12 @@ function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: s
     });
 
     openaiWs.on('error', (err) => {
-      console.error('  [realtime] OpenAI WebSocket error:', err.message);
+      console.error('  [realtime] WebSocket error:', err.message);
     });
 
     openaiWs.on('close', (code, reason) => {
-      console.log(`  [realtime] OpenAI connection closed: ${code} ${reason.toString()}`);
-
-      if (browserClosed) return; // user ended the session, don't reconnect
+      console.log(`  [realtime] Connection closed: ${code} ${reason.toString()}`);
+      if (browserClosed) return;
 
       if (retryCount < MAX_RETRIES) {
         retryCount++;

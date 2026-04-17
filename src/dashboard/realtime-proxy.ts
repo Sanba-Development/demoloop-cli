@@ -20,10 +20,10 @@ async function findRealtimeModel(apiKey: string): Promise<string> {
     const ids = data.data.map((m) => m.id).filter((id) => id.includes('realtime'));
     console.log('  [realtime] Available realtime models:', ids.join(', ') || '(none)');
 
-    // 1. gpt-4o-realtime-preview with date stamp — proven tier, pick newest
+    // 1. gpt-4o-realtime-preview with date stamp — pick oldest stable (2024-12-17 before 2025-*)
     const gpt4oDated = ids
       .filter((id) => id.startsWith('gpt-4o-realtime-preview-') && !id.includes('mini'))
-      .sort().reverse();
+      .sort(); // ascending: 2024-12-17 comes before 2025-06-03
     if (gpt4oDated.length) return gpt4oDated[0];
 
     // 2. gpt-4o-realtime-preview alias (no date)
@@ -130,20 +130,13 @@ function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: s
 
     openaiWs.on('open', () => {
       console.log('  [realtime] Connected. Sending session.update...');
+      // Minimal session config — add fields back only once base connection is stable
       openaiWs!.send(JSON.stringify({
         type: 'session.update',
         session: {
           modalities: ['text', 'audio'],
-          instructions: buildSystemPrompt(stories, sprintSummary),
           voice: 'alloy',
-          input_audio_format: 'pcm16',
-          output_audio_format: 'pcm16',
-          turn_detection: {
-            type: 'server_vad',
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 600,
-          },
+          instructions: buildSystemPrompt(stories, sprintSummary),
         },
       }));
     });

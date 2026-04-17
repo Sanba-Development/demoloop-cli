@@ -110,9 +110,11 @@ function startProxy(
       // Track AI speaking state so we can gate mic input
       if (evt.type === 'response.created')                        aiSpeaking = true;
       if (evt.type === 'response.done' || evt.type === 'response.cancelled') {
-        // Flush any audio buffered during the AI's turn, then re-enable mic after
-        // a short grace period so echo / ambient noise doesn't immediately trigger VAD.
-        openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.clear' }));
+        // Re-enable mic after a grace period.  Do NOT send input_audio_buffer.clear
+        // in server_vad mode — OpenAI owns the buffer and clearing it after response.done
+        // corrupts its VAD state machine, causing a server_error ~500ms later.
+        // aiSpeaking=true has been blocking all appends during the response so the
+        // buffer is already empty.
         setTimeout(() => {
           aiSpeaking = false;
           console.log('  [realtime] AI finished — mic input enabled');
@@ -121,9 +123,8 @@ function startProxy(
 
       if (evt.type === 'session.updated') {
         console.log('  [realtime] Session ready. Starting demo...');
-        // Clear any audio that slipped in before session was fully configured,
-        // then kick off the initial AI greeting.
-        openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.clear' }));
+        // aiSpeaking=true blocks all mic audio from the start, so the buffer is
+        // already empty — no need to clear.  Just kick off the initial greeting.
         openaiWs.send(JSON.stringify({ type: 'response.create' }));
         if (browserWs.readyState === WebSocket.OPEN) {
           browserWs.send(JSON.stringify({ type: 'session.ready' }));

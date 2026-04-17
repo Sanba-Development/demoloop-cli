@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage, Server } from 'http';
 import type { Story } from '../lib/agent-parser.js';
 
-const REALTIME_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview';
+const REALTIME_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01';
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 2000;
 
@@ -128,7 +128,10 @@ function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: s
               content: [{ type: 'input_text', text: startText }],
             },
           }));
-          openaiWs!.send(JSON.stringify({ type: 'response.create' }));
+          openaiWs!.send(JSON.stringify({
+            type: 'response.create',
+            response: { modalities: ['text', 'audio'] },
+          }));
 
           if (browserWs.readyState === WebSocket.OPEN) {
             browserWs.send(JSON.stringify({ type: 'session.ready' }));
@@ -136,8 +139,7 @@ function handleSession(browserWs: WebSocket, stories: Story[], sprintSummary?: s
         }
 
         if (evt.type === 'error') {
-          const errMsg = evt.error?.message ?? JSON.stringify(evt.error ?? evt);
-          console.error('  [realtime] OpenAI error event:', errMsg);
+          console.error('  [realtime] OpenAI error:\n' + JSON.stringify(evt.error ?? evt, null, 2));
           // Don't surface to browser yet — we may reconnect successfully
         }
       } catch { /* binary frame — forward as-is */ }
